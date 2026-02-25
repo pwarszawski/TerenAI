@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 // Konfiguracja i struktury danych
 // -----------------------------------------------------------
 
-const std::string PROG_VERSION = "v266 (E3D+SCM)";
+const std::string PROG_VERSION = "v266.1";
 
 struct GlobalConfig {
     double OffsetEast = 0.0;
@@ -1085,6 +1085,7 @@ int main(int argc, char* argv[]) {
     // Główne wywołanie nowej funkcji eksportującej
     ExportTerrain(points);
     
-    std::cout << "Gotowe." << std::endl;
+    std::cout << "Gotowe.\n" << "Nacisnij Enter, aby zamknac okno..." << std::endl;
+    std::cin.get();
     return 0;
 }
