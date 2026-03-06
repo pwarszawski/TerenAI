@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 // Konfiguracja i struktury danych
 // -----------------------------------------------------------
 
-const std::string PROG_VERSION = "v266.1";
+const std::string PROG_VERSION = "v266.2";
 
 struct GlobalConfig {
     double OffsetEast = 0.0;
@@ -368,7 +368,7 @@ void LoadIniConfig(const std::string& filename) {
         std::cerr << " BLAD KRYTYCZNY: Brak pliku konfiguracyjnego '.ini'!\n";
         std::cerr << " Utworz plik '" << filename << "' w folderze z programem.\n";
         std::cerr << "========================================================\n";
-        exit(1); // Wymóg posiadania INI - program zamknie się natychmiast
+        exit(1); 
     }
     
     std::ifstream file(filename);
@@ -387,7 +387,6 @@ void LoadIniConfig(const std::string& filename) {
             else if (key == "DirNMT1") g_Config.DirNMT1 = val;
             else if (key == "FileNMT100") g_Config.FileNMT100 = val;
             
-            // Nowe tagi dla formatów Exportu
             else if (key == "ExportSCM") g_Config.ExportSCM = (val == "1" || val == "true" || val == "TRUE");
             else if (key == "OutputSCM" || key == "Output") g_Config.OutputSCM = val;
             else if (key == "ExportE3D") g_Config.ExportE3D = (val == "1" || val == "true" || val == "TRUE");
@@ -473,38 +472,50 @@ void LoadTracksFromSCN(const std::string& filename, std::vector<TrackSegment>& t
     bool isBridgeTrack = false;
     int totalSegments = 0;
 
-    std::cout << "[WCZYTYWANIE] Tory (Normal + Switch)..." << std::endl;
+    std::cout << "[WCZYTYWANIE] tory (normal + switch) oraz drogi (road)..." << std::endl;
     while (std::getline(file, line)) {
         if (line.empty()) continue;
         
-        bool isNode = (line.find("node") != std::string::npos);
-        bool isTrack = (line.find("track") != std::string::npos);
-        
-        if (isNode && isTrack) {
-            bool isNormal = (line.find("normal") != std::string::npos);
-            bool isSwitch = (line.find("switch") != std::string::npos);
+        // NOWY, PRECYZYJNY PARSER NAGŁÓWKA NODE
+        std::vector<std::string> words;
+        std::stringstream ss(line);
+        std::string word;
+        while (ss >> word) words.push_back(word);
 
-            if (isNormal || isSwitch) {
+        // Oczekiwana struktura: node(0) parent(1) child(2) nazwa(3) track(4) typ(5) szerokosc(6) ...
+        if (words.size() >= 6 && words[0] == "node" && words[4] == "track") {
+            std::string type = words[5];
+            
+            // Obsługujemy normalne tory, rozjazdy oraz drogi!
+            if (type == "normal" || type == "switch" || type == "road") {
                 inTrack = true; 
                 foundP1 = foundCV1 = foundCV2 = foundP2 = false; 
-                isTunnelTrack = (line.find("tunnel") != std::string::npos);
-                isBridgeTrack = (line.find("bridge") != std::string::npos);
+                isTunnelTrack = false;
+                isBridgeTrack = false;
+
+                // Precyzyjne szukanie flag 'tunnel' i 'bridge' w parametrach (zazwyczaj indeks > 5)
+                for (size_t i = 6; i < words.size(); ++i) {
+                    if (words[i] == "tunnel") isTunnelTrack = true;
+                    if (words[i] == "bridge") isBridgeTrack = true;
+                }
             }
             continue;
         }
 
+        // Wczytywanie punktów krzywej dla zaakceptowanego node'a
         if (inTrack) {
             if (line.find("endtrack") != std::string::npos) { inTrack = false; continue; }
+            
             char firstChar = ' ';
             for(char c : line) { if(!isspace(c)) { firstChar = c; break; } }
             if (!isdigit(firstChar) && firstChar != '-') continue;
 
-            std::stringstream ss(line); float x, y, z; 
-            if (!foundP1) { if (ss >> x >> y >> z) { p1 = {x, y, z}; foundP1 = true; } }
-            else if (!foundCV1) { if (ss >> x >> y >> z) { cv1 = {x, y, z}; foundCV1 = true; } }
-            else if (!foundCV2) { if (ss >> x >> y >> z) { cv2 = {x, y, z}; foundCV2 = true; } }
+            std::stringstream coord_ss(line); float x, y, z; 
+            if (!foundP1) { if (coord_ss >> x >> y >> z) { p1 = {x, y, z}; foundP1 = true; } }
+            else if (!foundCV1) { if (coord_ss >> x >> y >> z) { cv1 = {x, y, z}; foundCV1 = true; } }
+            else if (!foundCV2) { if (coord_ss >> x >> y >> z) { cv2 = {x, y, z}; foundCV2 = true; } }
             else if (!foundP2) {
-                if (ss >> x >> y >> z) { 
+                if (coord_ss >> x >> y >> z) { 
                     p2 = {x, y, z}; foundP2 = true;
                     
                     float approxLen = std::sqrt(std::pow(p1.x-p2.x, 2) + std::pow(p1.y-p2.y, 2) + std::pow(p1.z-p2.z, 2));
@@ -645,6 +656,7 @@ void GenerateEmbankmentPoints(const std::vector<TrackSegment>& tracks, std::vect
         processed++;
         if (processed % 1000 == 0) ShowProgress(processed, total, "[GENEROWANIE] Nasypy");
 
+        // Wykluczenie punktów dla tuneli i mostów
         if (t.isTunnel || t.isBridge) continue;
 
         Vector3 dir = t.p2 - t.p1;
@@ -681,7 +693,7 @@ void GenerateEmbankmentPoints(const std::vector<TrackSegment>& tracks, std::vect
     }
     if(g_Config.ProgressMode != 0) std::cout << std::endl;
     
-    std::cout << " -> Dodano " << newPoints.size() << " punktow kotwiczacych." << std::endl;
+    std::cout << " -> Dodano " << newPoints.size() << " punktow." << std::endl;
     points.insert(points.end(), newPoints.begin(), newPoints.end());
 }
 
@@ -732,8 +744,10 @@ void ProcessTerrain(std::vector<TerrainPoint>& points, const std::vector<TrackSe
                 float trkY; 
                 float d = MathUtils::GetDistanceToSegment(pt.pos, *trk, trkY);
                 
+                // Rejestracja bliskości obiektu, aby ocalić teren NMT1 od wykasowania
                 if (d < absMinDist) absMinDist = d;
 
+                // Tunele i mosty są wyłączone z dociągania wysokości wierzchołków
                 if (trk->isTunnel || trk->isBridge) continue;
 
                 if (d <= SMOOTH_END) {
@@ -862,9 +876,9 @@ void ExportTerrain(std::vector<TerrainPoint>& points) {
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
 
-    // =====================================
+    // -----------------------------------------------------------
     // EKSPORT: Format .scm (Tekstowy)
-    // =====================================
+    // -----------------------------------------------------------
     if (g_Config.ExportSCM) {
         std::cout << "[EKSPORT SCM] Plik: " << g_Config.OutputSCM << "..." << std::endl;
         std::ofstream out(g_Config.OutputSCM);
@@ -910,9 +924,9 @@ void ExportTerrain(std::vector<TerrainPoint>& points) {
         std::cout << " -> Zapisano " << nodeCounter << " wezlow w SCM." << std::endl;
     }
 
-    // =====================================
+    // -----------------------------------------------------------
     // EKSPORT: Format .e3d (Binarny)
-    // =====================================
+    // -----------------------------------------------------------
     if (g_Config.ExportE3D) {
         std::cout << "[EKSPORT E3D] Plik: " << g_Config.OutputE3D << "..." << std::endl;
 
