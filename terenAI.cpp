@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 // Konfiguracja i struktury danych
 // -----------------------------------------------------------
 
-const std::string PROG_VERSION = "v279";
+const std::string PROG_VERSION = "v281";
 
 struct GlobalConfig {
     double OffsetEast = 0.0;
@@ -67,7 +67,7 @@ struct GlobalConfig {
     // Nazwy plików i katalogów
     std::string DirNMT1 = "NMT1";
     std::string FileNMT100 = "NMT100.txt";
-    std::string FileSCN = "EXPORT.SCN";
+    std::vector<std::string> ScnFiles; 
     
     // Ustawienia Eksportu (z pliku .ini)
     bool ExportSCM = true;
@@ -142,30 +142,21 @@ struct TriangleSortInfo {
     float cx, cz;
 };
 
-// -----------------------------------------------------------
-// Pomocnicza klasa dla formatu E3D 
-// -----------------------------------------------------------
 struct E3DChunkWriter {
     std::vector<uint8_t> data;
 
     void writeID(const char* id) { data.insert(data.end(), id, id + 4); }
-    
     void writeU32(uint32_t val) {
         uint8_t* p = reinterpret_cast<uint8_t*>(&val);
         data.insert(data.end(), p, p + 4);
     }
-    
     void writeI32(int32_t val) { writeU32(static_cast<uint32_t>(val)); }
-    
     void writeF32(float val) {
         uint8_t* p = reinterpret_cast<uint8_t*>(&val);
         data.insert(data.end(), p, p + 4);
     }
-    
     void writeZeroes(size_t count) { data.insert(data.end(), count, 0); }
-    
     void pad() { while (data.size() % 4 != 0) data.push_back(0); }
-    
     void finalizeLength() {
         if (data.size() >= 8) {
             uint32_t size = static_cast<uint32_t>(data.size());
@@ -173,10 +164,6 @@ struct E3DChunkWriter {
         }
     }
 };
-
-// -----------------------------------------------------------
-// Narzędzia pomocnicze
-// -----------------------------------------------------------
 
 std::string Trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
@@ -333,7 +320,11 @@ void LoadIniConfig(const std::string& filename) {
         size_t eqPos = line.find('='); if (eqPos == std::string::npos) continue;
         std::string key = Trim(line.substr(0, eqPos)); std::string val = Trim(line.substr(eqPos + 1));
         try {
-            if (key == "FileSCN") g_Config.FileSCN = val; else if (key == "DirNMT1") g_Config.DirNMT1 = val; else if (key == "FileNMT100") g_Config.FileNMT100 = val;
+            if (key == "FileSCN") {
+                std::stringstream ss(val); std::string item;
+                while (std::getline(ss, item, ',')) { g_Config.ScnFiles.push_back(Trim(item)); }
+            }
+            else if (key == "DirNMT1") g_Config.DirNMT1 = val; else if (key == "FileNMT100") g_Config.FileNMT100 = val;
             else if (key == "ExportSCM") g_Config.ExportSCM = (val == "1" || val == "true" || val == "TRUE");
             else if (key == "OutputSCM" || key == "Output") g_Config.OutputSCM = val;
             else if (key == "ExportE3D") g_Config.ExportE3D = (val == "1" || val == "true" || val == "TRUE");
@@ -358,8 +349,9 @@ void PrintConfig() {
     std::cout << " Wczytana konfiguracja (z pliku .ini):" << std::endl;
     std::cout << "---------------------------------------" << std::endl;
     std::cout << " [WEJSCIE]" << std::endl;
-    std::cout << "  Plik torow SCN : " << g_Config.FileSCN << std::endl;
-    std::cout << "  Katalog NMT1   : " << g_Config.DirNMT1 << std::endl;
+    std::cout << "  Pliki torow SCN : ";
+    for (const auto& f : g_Config.ScnFiles) std::cout << f << " ";
+    std::cout << "\n  Katalog NMT1   : " << g_Config.DirNMT1 << std::endl;
     std::cout << "  Plik NMT100    : " << g_Config.FileNMT100 << std::endl;
     std::cout << "\n [DOWNSAMPLING LOD NMT1]" << std::endl;
     std::cout << "  0 - " << g_Config.NMT1_DistNear << "m : Krok " << g_Config.NMT1_StepNear << "m" << std::endl;
@@ -368,15 +360,17 @@ void PrintConfig() {
     std::cout << "----------------------------------------\n\n";
 }
 
-bool ParseSCNOffsets(const std::string& filename) {
-    std::ifstream file(filename); if (!file.is_open()) return false;
-    std::string line;
-    for (int i = 0; i < 50; i++) {
-        if (!std::getline(file, line)) break;
-        if (line.find("//$g") != std::string::npos) {
-            std::stringstream ss(line); std::string tag, sys; double kmEast, kmNorth;
-            ss >> tag; 
-            if (tag == "//$g") { ss >> sys; if (ss >> kmEast >> kmNorth) { g_Config.OffsetEast = kmEast * 1000.0; g_Config.OffsetNorth = kmNorth * 1000.0; g_Config.OffsetsLoaded = true; return true; } }
+bool ParseSCNOffsets(const std::vector<std::string>& filenames) {
+    for (const auto& filename : filenames) {
+        std::ifstream file(filename); if (!file.is_open()) continue;
+        std::string line;
+        for (int i = 0; i < 50; i++) {
+            if (!std::getline(file, line)) break;
+            if (line.find("//$g") != std::string::npos) {
+                std::stringstream ss(line); std::string tag, sys; double kmEast, kmNorth;
+                ss >> tag; 
+                if (tag == "//$g") { ss >> sys; if (ss >> kmEast >> kmNorth) { g_Config.OffsetEast = kmEast * 1000.0; g_Config.OffsetNorth = kmNorth * 1000.0; g_Config.OffsetsLoaded = true; return true; } }
+            }
         }
     }
     return false;
@@ -384,13 +378,13 @@ bool ParseSCNOffsets(const std::string& filename) {
 
 void LoadTracksFromSCN(const std::string& filename, std::vector<TrackSegment>& tracks) {
     std::ifstream file(filename);
-    if (!file.is_open()) { std::cerr << "BLAD: Nie mozna otworzyc pliku SCN!" << std::endl; return; }
+    if (!file.is_open()) { std::cerr << "BLAD: Nie mozna otworzyc pliku SCN: " << filename << std::endl; return; }
     std::string line; Vector3 p1, cv1, cv2, p2;
     bool foundP1 = false, foundCV1 = false, foundCV2 = false, foundP2 = false;
     bool inTrack = false, isTunnelTrack = false, isBridgeTrack = false, isPlatformTrack = false;
-    int totalSegments = 0, parsedBridges = 0, parsedTunnels = 0;
+    int totalSegments = 0;
 
-    std::cout << "[WCZYTYWANIE] tory (normal/switch) oraz drogi (road/perony)..." << std::endl;
+    std::cout << "[WCZYTYWANIE] tory z pliku: " << filename << " ..." << std::endl;
     while (std::getline(file, line)) {
         if (line.empty()) continue;
         std::vector<std::string> words; std::stringstream ss(line); std::string word;
@@ -439,18 +433,16 @@ void LoadTracksFromSCN(const std::string& filename, std::vector<TrackSegment>& t
                         tSeg.isTunnel = isTunnelTrack; tSeg.isBridge = isBridgeTrack; tSeg.isPlatform = isPlatformTrack;
                         tSeg.isGhost = false;
                         tSeg.CalcBounds(); tracks.push_back(tSeg); totalSegments++;
-                        if (i == 1) { if (isBridgeTrack) parsedBridges++; if (isTunnelTrack) parsedTunnels++; }
                     }
                 }
             }
         }
     }
-    std::cout << " -> Zaladowano " << totalSegments << " segmentow torowych." << std::endl;
-    std::cout << " -> LOG: Wykryto wezlow typu 'bridge' : " << parsedBridges << std::endl;
+    std::cout << " -> " << totalSegments << " segmentow." << std::endl;
 }
 
 void FlagGhostTracks(std::vector<TrackSegment>& tracks) {
-    std::cout << "[ANALIZA] Wykrywanie torow typu bridge i tunnel..." << std::endl;
+    std::cout << "[ANALIZA] Wykrywanie torow na wiaduktach..." << std::endl;
     std::vector<TrackSegment> bridges;
     for (const auto& t : tracks) {
         if (t.isBridge) bridges.push_back(t);
@@ -481,7 +473,7 @@ void FlagGhostTracks(std::vector<TrackSegment>& tracks) {
             }
         }
     }
-    std::cout << " -> Oznaczono " << ghosts << " segmentow jako tory-duchy (zostana zignorowane)." << std::endl;
+    std::cout << " -> Oznaczono " << ghosts << " segmentow jako tory na wiaduktach (zostana zignorowane)." << std::endl;
 }
 
 void LoadNMT1_Turbo(const std::string& folderPath, std::vector<TerrainPoint>& outPoints, const std::vector<TrackSegment>& tracks) {
@@ -593,8 +585,10 @@ void GenerateEmbankmentPoints(const std::vector<TrackSegment>& tracks, std::vect
             Vector3 leftPos = centerPos + perp * OFFSET_XZ; leftPos.y = terrainHeight;
             Vector3 rightPos = centerPos - perp * OFFSET_XZ; rightPos.y = terrainHeight;
 
-            if (!pGrid.HasNeighbor(leftPos, MIN_DIST)) { newPoints.push_back({leftPos, true, true, true}); pGrid.Add(leftPos); }
-            if (!pGrid.HasNeighbor(rightPos, MIN_DIST)) { newPoints.push_back({rightPos, true, true, true}); pGrid.Add(rightPos); }
+            // Punkty nasypu NIE SA JUZ ZAMROZONE (ostatni argument = false)!
+            // Pozwala to na ich wyginanie i ksztaltowanie, jesli wpadna miedzy dwa tory.
+            if (!pGrid.HasNeighbor(leftPos, MIN_DIST)) { newPoints.push_back({leftPos, true, true, false}); pGrid.Add(leftPos); }
+            if (!pGrid.HasNeighbor(rightPos, MIN_DIST)) { newPoints.push_back({rightPos, true, true, false}); pGrid.Add(rightPos); }
         }
     }
     if(g_Config.ProgressMode != 0) std::cout << std::endl;
@@ -622,14 +616,10 @@ void ProcessTerrain(std::vector<TerrainPoint>& points, const std::vector<TrackSe
             TerrainPoint& pt = points[i];
             fineGrid.GetNearby(pt.pos, nearbyFine);
 
-            float minDistNormal = 1e9f;
             float minDistBridge = 1e9f;
             const TrackSegment* nearestBridge = nullptr;
-            const TrackSegment* nearestNormal = nullptr; 
-            
             float distToAnyTrack = 1e9f;
 
-            // KROK 1: Analiza otoczenia i wybór najbliższego toru
             for (const auto* trk : nearbyFine) {
                 float dummyY;
                 float d = MathUtils::GetDistanceToSegment(pt.pos, *trk, dummyY);
@@ -637,15 +627,11 @@ void ProcessTerrain(std::vector<TerrainPoint>& points, const std::vector<TrackSe
 
                 if (trk->isBridge || trk->isTunnel) {
                     if (d < minDistBridge) { minDistBridge = d; nearestBridge = trk; }
-                } 
-                else if (!trk->isGhost) { 
-                    if (d < minDistNormal) { minDistNormal = d; nearestNormal = trk; }
                 }
             }
 
             bool killPoint = false;
 
-            // Niszczenie "śmieci" laserowych na mostach
             if (nearestBridge != nullptr && minDistBridge <= 12.0f && pt.isNMT1 && !pt.isFixed) {
                 float bY; MathUtils::GetDistanceToSegment(pt.pos, *nearestBridge, bY);
                 if (pt.pos.y > bY - 2.5f) { killPoint = true; }
@@ -653,28 +639,49 @@ void ProcessTerrain(std::vector<TerrainPoint>& points, const std::vector<TrackSe
 
             if (killPoint) { pt.isValid = false; processed++; continue; }
             
-            // KROK 2: Wygładzanie na podstawie JEDNEGO NAJBLIŻSZEGO toru normalnego
-            if (nearestNormal != nullptr && minDistNormal <= SMOOTH_END) {
-                float trkY; 
-                MathUtils::GetDistanceToSegment(pt.pos, *nearestNormal, trkY);
-                
-                float currentOffset = g_Config.TrackOffset;
-                if (nearestNormal->isPlatform) currentOffset += g_Config.PlatformExtraOffset;
-                
-                float targetH = trkY - currentOffset;
+            // KROK 2: Inverse Distance Weighting & Zsumowany Wpływ
+            float sumWeightedHeights = 0.0f;
+            float sumWeights = 0.0f;
+            float totalInfluence = 0.0f;
 
-                // Snap (Wyrównanie do poziomu nasypu)
-                if (minDistNormal <= SNAP_DIST) {
-                    pt.pos.y = targetH; 
-                } 
-                // Zjazd do poziomu naturalnego terenu NMT
-                else {
-                    float blendFactor = (minDistNormal - SNAP_DIST) / (SMOOTH_END - SNAP_DIST);
-                    pt.pos.y = MathUtils::Lerp(targetH, pt.pos.y, blendFactor);
+            for (const auto* trk : nearbyFine) {
+                if (trk->isBridge || trk->isTunnel || trk->isGhost) continue; 
+                
+                float trkY; 
+                float d = MathUtils::GetDistanceToSegment(pt.pos, *trk, trkY);
+                
+                if (d <= SMOOTH_END) {
+                    float currentOffset = g_Config.TrackOffset;
+                    if (trk->isPlatform) currentOffset += g_Config.PlatformExtraOffset;
+                    float targetH = trkY - currentOffset;
+
+                    // Waga do blendowania wysokosci (potęga 4 mocno trzyma plaski teren bezposrednio przy torze)
+                    float d_clamped = std::max(0.5f, d); 
+                    float weight = 1.0f / (d_clamped * d_clamped * d_clamped * d_clamped);
+                    
+                    sumWeightedHeights += targetH * weight;
+                    sumWeights += weight;
+
+                    // Obliczenie wpływu by wiedziec czy ignorujemy "naturalny" NMT
+                    float influence = 1.0f;
+                    if (d > SNAP_DIST) {
+                        float t = 1.0f - ((d - SNAP_DIST) / (SMOOTH_END - SNAP_DIST));
+                        influence = t * t * (3.0f - 2.0f * t); // Smoothstep
+                    }
+                    totalInfluence += influence;
                 }
             }
 
-            // KROK 3: Limitowanie widoczności terenu oparte o DOWOLNY tor
+            if (sumWeights > 0.0000001f) {
+                // Obliczamy najodpowiedniejsza wysokosc oparta o uklad torow
+                float blendedTargetH = sumWeightedHeights / sumWeights;
+                
+                // Jesli suma wplywu >= 1.0 (np. srodek miedzy bliskimi torami), tory rzadza.
+                float trackDominance = std::min(1.0f, totalInfluence);
+                pt.pos.y = MathUtils::Lerp(pt.pos.y, blendedTargetH, trackDominance);
+            }
+
+            // Krok 3: Limitowanie odleglosciowe widocznosci 
             if (pt.isNMT1) { pt.isValid = (distToAnyTrack <= LIMIT_NMT1); } 
             else { 
                 if (distToAnyTrack <= LIMIT_NMT1) pt.isValid = false;
@@ -786,12 +793,16 @@ void ExportTerrain(std::vector<TerrainPoint>& points) {
 void ParseArgs(int argc, char* argv[]) { for (int i = 1; i < argc; ++i) { std::string arg = argv[i]; if (arg == "-help" || arg == "/?") { PrintConfig(); exit(0); } } }
 
 int main(int argc, char* argv[]) {
-    std::locale::global(std::locale("C")); std::cout << "--- terenAI " << PROG_VERSION << " --- \n"; LoadIniConfig("terenAI.ini"); ParseArgs(argc, argv); ParseSCNOffsets(g_Config.FileSCN); PrintConfig();
+    std::locale::global(std::locale("C")); std::cout << "--- terenAI " << PROG_VERSION << " --- \n"; LoadIniConfig("terenAI.ini"); ParseArgs(argc, argv); 
+    
+    if (g_Config.ScnFiles.empty()) { std::cerr << "BLAD: Nie zdefiniowano zadnych plikow w FileSCN!\n"; return 1; }
+    ParseSCNOffsets(g_Config.ScnFiles); PrintConfig();
+    
     if (!g_Config.ExportSCM && !g_Config.ExportE3D) { std::cerr << "BLAD: Wszystkie opcje eksportu wylaczone.\n"; return 1; }
     if (!g_Config.OffsetsLoaded) { std::cout << "Podaj Offset East (km): "; std::cin >> g_Config.OffsetEast; std::cout << "Podaj Offset North (km): "; std::cin >> g_Config.OffsetNorth; g_Config.OffsetEast *= 1000.0; g_Config.OffsetNorth *= 1000.0; }
     
     std::vector<TrackSegment> tracks; 
-    LoadTracksFromSCN(g_Config.FileSCN, tracks);
+    for (const auto& filename : g_Config.ScnFiles) { LoadTracksFromSCN(filename, tracks); }
     if (tracks.empty()) { std::cerr << "BLAD: Brak torow!" << std::endl; return 1; }
     
     FlagGhostTracks(tracks);
