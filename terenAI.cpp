@@ -730,7 +730,7 @@ void ProcessAndFilterTerrainInRAM(std::vector<TerrainPoint>& points, const std::
 }
 
 void GenerateEmbankmentPoints(const std::vector<TrackSegment>& tracks, std::vector<TerrainPoint>& points) {
-    std::cout << "[GENEROWANIE] Obliczanie ow pod torami..." << std::endl;
+    std::cout << "[GENEROWANIE] Obliczanie nasypow pod torami..." << std::endl;
     SpatialGrid<150> grid; grid.Build(tracks);
     std::vector<TerrainPoint> newPoints;
     const double OFFSET_XZ = g_Config.EmbankmentWidth;
